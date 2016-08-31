@@ -26,6 +26,7 @@ const Executor = require('./index').Executor,
     HttpRequest = require('./index').Request,
     Command = require('../lib/command').Command,
     CommandName = require('../lib/command').Name,
+    error = require('../lib/error'),
     promise = require('../lib/promise');
 
 
@@ -33,7 +34,7 @@ const Executor = require('./index').Executor,
 /**
  * Queries a WebDriver server for its current status.
  * @param {string} url Base URL of the server to query.
- * @return {!promise.Promise.<!Object>} A promise that resolves with
+ * @return {!Promise<!Object>} A promise that resolves with
  *     a hash of the server status.
  */
 function getStatus(url) {
@@ -50,7 +51,7 @@ function getStatus(url) {
 /**
  * Queries a WebDriver server for its current status.
  * @param {string} url Base URL of the server to query.
- * @return {!promise.Promise.<!Object>} A promise that resolves with
+ * @return {!Promise<!Object>} A promise that resolves with
  *     a hash of the server status.
  */
 exports.getStatus = getStatus;
@@ -70,16 +71,23 @@ exports.waitForServer = function(url, timeout) {
   return ready.promise;
 
   function checkServerStatus() {
-    return getStatus(url).then(ready.fulfill, onError);
+    return getStatus(url).then(status => ready.fulfill(status), onError);
   }
 
-  function onError() {
+  function onError(e) {
+    // Some servers don't support the status command. If they are able to
+    // response with an error, then can consider the server ready.
+    if (e instanceof error.UnsupportedOperationError) {
+      ready.fulfill();
+      return;
+    }
+
     if (Date.now() - start > timeout) {
       ready.reject(
           Error('Timed out waiting for the WebDriver server at ' + url));
     } else {
       setTimeout(function() {
-        if (ready.isPending()) {
+        if (ready.promise.isPending()) {
           checkServerStatus();
         }
       }, 50);
@@ -114,7 +122,7 @@ exports.waitForUrl = function(url, timeout) {
           'Timed out waiting for the URL to return 2xx: ' + url));
     } else {
       setTimeout(function() {
-        if (ready.isPending()) {
+        if (ready.promise.isPending()) {
           testUrl();
         }
       }, 50);
@@ -122,7 +130,7 @@ exports.waitForUrl = function(url, timeout) {
   }
 
   function onResponse(response) {
-    if (!ready.isPending()) return;
+    if (!ready.promise.isPending()) return;
     if (response.status > 199 && response.status < 300) {
       return ready.fulfill();
     }

@@ -19,6 +19,7 @@ package org.openqa.selenium.remote.server;
 
 import com.beust.jcommander.JCommander;
 
+import org.openqa.grid.internal.utils.configuration.StandaloneConfiguration;
 import org.openqa.grid.shared.GridNodeServer;
 import org.openqa.selenium.remote.SessionId;
 import org.openqa.selenium.remote.server.handler.DeleteSession;
@@ -30,6 +31,8 @@ import org.seleniumhq.jetty9.server.ServerConnector;
 import org.seleniumhq.jetty9.servlet.ServletContextHandler;
 import org.seleniumhq.jetty9.util.thread.QueuedThreadPool;
 
+import java.util.Map;
+
 import javax.servlet.Servlet;
 
 /**
@@ -37,10 +40,10 @@ import javax.servlet.Servlet;
  */
 public class SeleniumServer implements GridNodeServer {
 
-  private final int port;
-  private int threadCount;
   private Server server;
   private DefaultDriverSessions driverSessions;
+  private StandaloneConfiguration configuration;
+  private Map<String, Class<? extends Servlet>> extraServlets;
 
   private Thread shutDownHook;
   /**
@@ -53,9 +56,18 @@ public class SeleniumServer implements GridNodeServer {
   private static final int MAX_SHUTDOWN_RETRIES = 8;
 
 
-  public SeleniumServer(int port) {
-    this.port = port;
+  public SeleniumServer(StandaloneConfiguration configuration) {
+    this.configuration = configuration;
   }
+
+  public int getRealPort() {
+    if (server.isStarted()) {
+      ServerConnector socket = (ServerConnector)server.getConnectors()[0];
+      return socket.getPort();
+    }
+    return configuration.port;
+  }
+
 
   private void addRcSupport(ServletContextHandler handler) {
     try {
@@ -70,13 +82,25 @@ public class SeleniumServer implements GridNodeServer {
     }
   }
 
-  private void setThreadCount(int threadCount) {
-    this.threadCount = threadCount;
+  private void addExtraServlets(ServletContextHandler handler) {
+    if (extraServlets != null && extraServlets.size() > 0) {
+      for (String path : extraServlets.keySet()) {
+        handler.addServlet(extraServlets.get(path), path);
+      }
+    }
+  }
+
+  public void setConfiguration(StandaloneConfiguration configuration) {
+    this.configuration = configuration;
+  }
+
+  public void setExtraServlets(Map<String, Class<? extends Servlet>> extraServlets) {
+    this.extraServlets = extraServlets;
   }
 
   public void boot() {
-    if (threadCount > 0) {
-      server = new Server(new QueuedThreadPool(threadCount));
+    if (configuration.jettyThreads != null && configuration.jettyThreads > 0) {
+      server = new Server(new QueuedThreadPool(configuration.jettyThreads));
     } else {
       server = new Server();
     }
@@ -87,7 +111,18 @@ public class SeleniumServer implements GridNodeServer {
     handler.setAttribute(DriverServlet.SESSIONS_KEY, driverSessions);
     handler.setContextPath("/");
     handler.addServlet(DriverServlet.class, "/wd/hub/*");
+
+    if (configuration.browserTimeout != null) {
+      handler.setInitParameter(DriverServlet.BROWSER_TIMEOUT_PARAMETER,
+                               String.valueOf(configuration.browserTimeout));
+    }
+    if (configuration.timeout != null) {
+      handler.setInitParameter(DriverServlet.SESSION_TIMEOUT_PARAMETER,
+                               String.valueOf(configuration.timeout));
+    }
+
     addRcSupport(handler);
+    addExtraServlets(handler);
 
     server.setHandler(handler);
 
@@ -95,7 +130,10 @@ public class SeleniumServer implements GridNodeServer {
     httpConfig.setSecureScheme("https");
 
     ServerConnector http = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
-    http.setPort(port);
+    if (configuration.port == null) {
+      configuration.port = 4444;
+    }
+    http.setPort(configuration.port);
     http.setIdleTimeout(500000);
 
     server.setConnectors(new Connector[]{http});
@@ -178,19 +216,18 @@ public class SeleniumServer implements GridNodeServer {
   }
 
   public static void main(String[] argv) {
-    CommandLineArgs args = new CommandLineArgs();
-    JCommander jCommander = new JCommander(args, argv);
+    StandaloneConfiguration configuration = new StandaloneConfiguration();
+    JCommander jCommander = new JCommander(configuration, argv);
     jCommander.setProgramName("selenium-3-server");
 
-    if (args.help) {
+    if (configuration.help) {
       StringBuilder message = new StringBuilder();
       jCommander.usage(message);
       System.err.println(message.toString());
       return;
     }
 
-    SeleniumServer server = new SeleniumServer(args.port);
-    server.setThreadCount(args.jettyThreads);
+    SeleniumServer server = new SeleniumServer(configuration);
     server.boot();
   }
 
@@ -198,7 +235,7 @@ public class SeleniumServer implements GridNodeServer {
     if (msg != null) {
       System.out.println(msg);
     }
-    CommandLineArgs args = new CommandLineArgs();
+    StandaloneConfiguration args = new StandaloneConfiguration();
     JCommander jCommander = new JCommander(args);
     jCommander.usage();
   }
